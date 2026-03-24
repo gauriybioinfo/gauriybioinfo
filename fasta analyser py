@@ -1,0 +1,380 @@
+"""
+fasta_analyser.py
+-----------------
+A comprehensive FASTA sequence analysis tool.
+Computes GC content, codon usage, finds open reading frames (ORFs),
+calculates sequence complexity, and generates a summary report + plots.
+
+Works on both nucleotide and protein FASTA files.
+Handles multi-sequence FASTA files.
+
+Usage:
+    python fasta_analyser.py -i sequences.fasta -o results/ --type nucleotide
+    python fasta_analyser.py -i proteins.fasta  -o results/ --type protein
+    python fasta_analyser.py -i genome.fasta    -o results/ --type nucleotide --orf-min 100
+
+Author: Gauri
+"""
+
+import argparse
+import os
+import sys
+from collections import Counter
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import numpy as np
+
+
+# ─────────────────────────────────────────────
+# FASTA PARSER
+# ─────────────────────────────────────────────
+
+def parse_fasta(filepath):
+    """
+    Parse a multi-sequence FASTA file.
+    Yields (header, sequence) tuples.
+    """
+    header = None
+    seq_parts = []
+
+    with open(filepath) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if header is not None:
+                    yield header, "".join(seq_parts).upper()
+                header    = line[1:]
+                seq_parts = []
+            else:
+                seq_parts.append(line)
+
+    if header is not None:
+        yield header, "".join(seq_parts).upper()
+
+
+# ─────────────────────────────────────────────
+# NUCLEOTIDE ANALYSIS
+# ─────────────────────────────────────────────
+
+CODON_TABLE = {
+    "TTT": "Phe", "TTC": "Phe", "TTA": "Leu", "TTG": "Leu",
+    "CTT": "Leu", "CTC": "Leu", "CTA": "Leu", "CTG": "Leu",
+    "ATT": "Ile", "ATC": "Ile", "ATA": "Ile", "ATG": "Met",
+    "GTT": "Val", "GTC": "Val", "GTA": "Val", "GTG": "Val",
+    "TCT": "Ser", "TCC": "Ser", "TCA": "Ser", "TCG": "Ser",
+    "CCT": "Pro", "CCC": "Pro", "CCA": "Pro", "CCG": "Pro",
+    "ACT": "Thr", "ACC": "Thr", "ACA": "Thr", "ACG": "Thr",
+    "GCT": "Ala", "GCC": "Ala", "GCA": "Ala", "GCG": "Ala",
+    "TAT": "Tyr", "TAC": "Tyr", "TAA": "Stop","TAG": "Stop",
+    "CAT": "His", "CAC": "His", "CAA": "Gln", "CAG": "Gln",
+    "AAT": "Asn", "AAC": "Asn", "AAA": "Lys", "AAG": "Lys",
+    "GAT": "Asp", "GAC": "Asp", "GAA": "Glu", "GAG": "Glu",
+    "TGT": "Cys", "TGC": "Cys", "TGA": "Stop","TGG": "Trp",
+    "CGT": "Arg", "CGC": "Arg", "CGA": "Arg", "CGG": "Arg",
+    "AGT": "Ser", "AGC": "Ser", "AGA": "Arg", "AGG": "Arg",
+    "GGT": "Gly", "GGC": "Gly", "GGA": "Gly", "GGG": "Gly",
+}
+
+STOP_CODONS = {"TAA", "TAG", "TGA"}
+
+
+def gc_content(seq):
+    """Calculate GC content as percentage."""
+    if not seq:
+        return 0.0
+    gc = seq.count("G") + seq.count("C")
+    return gc / len(seq) * 100
+
+
+def nucleotide_composition(seq):
+    """Return counts of A, T, G, C, N."""
+    return {
+        "A": seq.count("A"),
+        "T": seq.count("T"),
+        "G": seq.count("G"),
+        "C": seq.count("C"),
+        "N": seq.count("N"),
+    }
+
+
+def codon_usage(seq):
+    """
+    Calculate codon usage from a nucleotide sequence (reading frame +1).
+    Returns dict of codon -> count.
+    """
+    codons = {}
+    for i in range(0, len(seq) - 2, 3):
+        codon = seq[i:i+3]
+        if len(codon) == 3 and all(c in "ATGCN" for c in codon):
+            codons[codon] = codons.get(codon, 0) + 1
+    return codons
+
+
+def find_orfs(seq, min_length=100):
+    """
+    Find all open reading frames in all 6 reading frames.
+    Returns list of (frame, start, end, length, sequence) tuples.
+    """
+    def reverse_complement(s):
+        comp = str.maketrans("ATGC", "TACG")
+        return s.translate(comp)[::-1]
+
+    orfs = []
+    sequences = [(seq, "+"), (reverse_complement(seq), "-")]
+
+    for strand_seq, strand in sequences:
+        for frame in range(3):
+            i = frame
+            while i < len(strand_seq) - 2:
+                codon = strand_seq[i:i+3]
+                if codon == "ATG":
+                    # found start — search for stop
+                    j = i + 3
+                    while j < len(strand_seq) - 2:
+                        stop_codon = strand_seq[j:j+3]
+                        if stop_codon in STOP_CODONS:
+                            orf_len = j + 3 - i
+                            if orf_len >= min_length:
+                                orfs.append({
+                                    "strand": strand,
+                                    "frame":  frame + 1,
+                                    "start":  i,
+                                    "end":    j + 3,
+                                    "length": orf_len,
+                                    "seq":    strand_seq[i:j+3],
+                                })
+                            i = j + 3
+                            break
+                        j += 3
+                    else:
+                        i += 3
+                        continue
+                else:
+                    i += 3
+
+    orfs.sort(key=lambda x: x["length"], reverse=True)
+    return orfs
+
+
+def sequence_complexity(seq, k=2):
+    """
+    Linguistic complexity — ratio of observed k-mers to possible k-mers.
+    Score of 1.0 = maximally complex, near 0 = low complexity / repeats.
+    """
+    if len(seq) < k:
+        return 0.0
+    observed  = len(set(seq[i:i+k] for i in range(len(seq) - k + 1)))
+    possible  = min(4**k, len(seq) - k + 1)
+    return observed / possible
+
+
+# ─────────────────────────────────────────────
+# PROTEIN ANALYSIS
+# ─────────────────────────────────────────────
+
+AA_PROPERTIES = {
+    "hydrophobic": set("AVILMFYW"),
+    "polar":       set("STNQ"),
+    "charged_pos": set("RKH"),
+    "charged_neg": set("DE"),
+    "special":     set("CGP"),
+}
+
+
+def amino_acid_composition(seq):
+    """Count each amino acid in a protein sequence."""
+    return dict(Counter(c for c in seq if c.isalpha()))
+
+
+def protein_properties(seq):
+    """Basic protein property analysis."""
+    seq = seq.upper()
+    total = len(seq)
+    if total == 0:
+        return {}
+
+    props = {}
+    for category, residues in AA_PROPERTIES.items():
+        count = sum(seq.count(aa) for aa in residues)
+        props[category] = count / total * 100
+
+    # Approximate molecular weight (Da) using average residue mass
+    avg_residue_mass = 110  # Daltons
+    props["approx_mw_kda"] = total * avg_residue_mass / 1000
+
+    return props
+
+
+# ─────────────────────────────────────────────
+# REPORT + PLOTS
+# ─────────────────────────────────────────────
+
+def write_nucleotide_report(records, output_dir, prefix):
+    """Write nucleotide analysis report."""
+    path = os.path.join(output_dir, f"{prefix}_analysis_report.txt")
+    lines = []
+
+    for header, seq in records:
+        lines += [
+            "=" * 60,
+            f"  Sequence: {header[:50]}",
+            "=" * 60,
+            f"  Length              : {len(seq):>10,} bp",
+            f"  GC content          : {gc_content(seq):>10.2f} %",
+            f"  Complexity (2-mer)  : {sequence_complexity(seq):>10.3f}",
+            "",
+        ]
+
+        comp = nucleotide_composition(seq)
+        lines += [
+            "  NUCLEOTIDE COMPOSITION",
+        ]
+        for base, count in comp.items():
+            pct = count / len(seq) * 100 if seq else 0
+            lines.append(f"    {base} : {count:>8,}  ({pct:.1f}%)")
+
+        orfs = find_orfs(seq, min_length=100)
+        lines += [
+            "",
+            f"  OPEN READING FRAMES (min 100 bp)",
+            f"    Total ORFs found    : {len(orfs)}",
+        ]
+        if orfs:
+            lines.append(f"    Longest ORF         : {orfs[0]['length']} bp  "
+                         f"({orfs[0]['strand']} strand, frame {orfs[0]['frame']})")
+            lines.append(f"    Top 5 ORFs:")
+            for orf in orfs[:5]:
+                lines.append(f"      {orf['strand']} frame {orf['frame']}  "
+                              f"pos {orf['start']}–{orf['end']}  len {orf['length']} bp")
+        lines.append("")
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+    print(f"  Report saved: {path}")
+
+
+def plot_nucleotide(records, output_dir, prefix):
+    """Generate nucleotide analysis plot."""
+    fig = plt.figure(figsize=(14, 9))
+    fig.suptitle(f"FASTA Analysis — {prefix}", fontsize=13, fontweight="bold")
+    gs  = gridspec.GridSpec(2, 2, hspace=0.45, wspace=0.35)
+
+    headers = [h[:20] for h, _ in records]
+    seqs    = [s for _, s in records]
+
+    # Panel 1: GC content per sequence
+    ax1 = fig.add_subplot(gs[0, 0])
+    gc_vals = [gc_content(s) for s in seqs]
+    colors  = ["#C44E52" if g > 60 or g < 40 else "#55A868" for g in gc_vals]
+    y_pos   = range(len(headers))
+    ax1.barh(y_pos, gc_vals, color=colors, edgecolor="white", linewidth=0.5)
+    ax1.set_yticks(y_pos)
+    ax1.set_yticklabels(headers, fontsize=8)
+    ax1.axvline(50, color="gray", linewidth=0.8, linestyle="--", alpha=0.6)
+    ax1.set_xlabel("GC content (%)")
+    ax1.set_title("GC content per sequence")
+    ax1.set_xlim(0, 100)
+    ax1.grid(axis="x", alpha=0.3)
+
+    # Panel 2: Sequence length distribution
+    ax2 = fig.add_subplot(gs[0, 1])
+    lengths = [len(s) for s in seqs]
+    ax2.hist(lengths, bins=min(30, len(seqs)), color="#4C72B0", edgecolor="white", linewidth=0.4)
+    ax2.set_xlabel("Sequence length (bp)")
+    ax2.set_ylabel("Count")
+    ax2.set_title("Sequence length distribution")
+    ax2.axvline(np.mean(lengths), color="red", linewidth=1.2, linestyle="--",
+                label=f"Mean: {np.mean(lengths):.0f}")
+    ax2.legend(fontsize=8)
+    ax2.grid(axis="y", alpha=0.3)
+
+    # Panel 3: Nucleotide composition (stacked, first sequence or aggregate)
+    ax3 = fig.add_subplot(gs[1, 0])
+    if seqs:
+        combined = "".join(seqs[:min(5, len(seqs))])
+        comp = nucleotide_composition(combined)
+        bases  = ["A", "T", "G", "C", "N"]
+        counts = [comp.get(b, 0) for b in bases]
+        total  = sum(counts) or 1
+        pcts   = [c / total * 100 for c in counts]
+        bar_colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2"]
+        ax3.bar(bases, pcts, color=bar_colors, edgecolor="white", linewidth=0.5)
+        ax3.set_ylabel("Percentage (%)")
+        ax3.set_title("Nucleotide composition")
+        ax3.grid(axis="y", alpha=0.3)
+
+    # Panel 4: Complexity scores
+    ax4 = fig.add_subplot(gs[1, 1])
+    complexity_vals = [sequence_complexity(s) for s in seqs]
+    ax4.hist(complexity_vals, bins=20, color="#8172B2", edgecolor="white", linewidth=0.4)
+    ax4.set_xlabel("Complexity score (2-mer)")
+    ax4.set_ylabel("Count")
+    ax4.set_title("Sequence complexity distribution")
+    ax4.axvline(np.mean(complexity_vals), color="red", linewidth=1.2, linestyle="--",
+                label=f"Mean: {np.mean(complexity_vals):.2f}")
+    ax4.legend(fontsize=8)
+    ax4.grid(axis="y", alpha=0.3)
+
+    plot_path = os.path.join(output_dir, f"{prefix}_analysis_plot.png")
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Plot saved:   {plot_path}")
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="FASTA sequence analyser — GC content, ORFs, codon usage, complexity."
+    )
+    parser.add_argument("-i", "--input",    required=True, help="Input FASTA file")
+    parser.add_argument("-o", "--output",   default="fasta_results", help="Output directory")
+    parser.add_argument("--type",           choices=["nucleotide", "protein"],
+                        default="nucleotide", help="Sequence type (default: nucleotide)")
+    parser.add_argument("--orf-min",        type=int, default=100,
+                        help="Minimum ORF length in bp (default: 100)")
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.input):
+        print(f"Error: file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+
+    os.makedirs(args.output, exist_ok=True)
+    prefix = os.path.basename(args.input).rsplit(".", 1)[0]
+
+    print(f"\nFASTA Sequence Analyser")
+    print(f"  Input  : {args.input}")
+    print(f"  Type   : {args.type}")
+    print(f"  Output : {args.output}/\n")
+
+    records = list(parse_fasta(args.input))
+    print(f"  Sequences found: {len(records)}")
+
+    if args.type == "nucleotide":
+        write_nucleotide_report(records, args.output, prefix)
+        plot_nucleotide(records, args.output, prefix)
+    else:
+        # Protein mode — basic composition report
+        path = os.path.join(args.output, f"{prefix}_protein_report.txt")
+        with open(path, "w") as f:
+            for header, seq in records:
+                f.write(f">{header}\n")
+                f.write(f"Length: {len(seq)} aa\n")
+                props = protein_properties(seq)
+                for k, v in props.items():
+                    f.write(f"  {k}: {v:.2f}\n")
+                f.write("\n")
+        print(f"  Protein report saved: {path}")
+
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()
