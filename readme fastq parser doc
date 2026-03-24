@@ -1,0 +1,132 @@
+# FASTQ Quality Parser
+
+A lightweight, dependency-minimal Python tool for FASTQ quality control analysis.
+Parses raw sequencing reads and generates a per-base quality report + multi-panel QC plot —
+without needing FastQC installed.
+
+---
+
+## Features
+
+- Per-base Phred quality score statistics (mean, median, IQR)
+- Read length distribution
+- GC content per read
+- N-base frequency
+- Pass / Warn / Fail quality flags
+- Plain-text summary report
+- 4-panel QC plot (PNG)
+- Supports plain `.fastq` and compressed `.fastq.gz`
+- Optional read limit for quick previews of large files
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/YOUR_USERNAME/fastq-quality-parser.git
+cd fastq-quality-parser
+pip install -r requirements.txt
+```
+
+**Requirements:**
+```
+numpy
+matplotlib
+```
+
+---
+
+## Usage
+
+```bash
+# Basic usage
+python fastq_quality_parser.py -i sample.fastq -o qc_output/
+
+# Gzip input
+python fastq_quality_parser.py -i sample.fastq.gz -o qc_output/
+
+# Limit to first 50,000 reads (fast preview)
+python fastq_quality_parser.py -i large_sample.fastq.gz -o qc_output/ --max-reads 50000
+```
+
+---
+
+## Output
+
+| File | Description |
+|------|-------------|
+| `{sample}_qc_report.txt` | Text summary with stats and pass/warn/fail flags |
+| `{sample}_qc_plot.png` | 4-panel QC figure |
+
+### Sample report
+```
+=======================================================
+  FASTQ QC Report — sample_R1
+=======================================================
+
+BASIC STATISTICS
+  Total reads          :      250,000
+  Total bases          :   37,500,000
+  Min read length      :          150
+  Max read length      :          150
+  Mean read length     :        150.0
+
+QUALITY
+  Mean per-base Q      :         34.2
+  Reads with mean Q<20 :          312  (0.1%)
+
+GC CONTENT
+  Mean GC (%)          :         51.3
+  Std GC  (%)          :          6.1
+
+INTERPRETATION
+  [PASS] Per-base quality
+  [PASS] Low-quality reads
+  [PASS] N-base content
+  [WARN] GC content
+```
+
+### Sample plot
+
+4-panel figure showing:
+- Per-base quality with IQR band
+- Read length histogram
+- GC content distribution
+- N-base content per read
+
+---
+
+## Quality thresholds
+
+| Metric | PASS | WARN | FAIL |
+|--------|------|------|------|
+| Mean per-base Q | ≥ 28 | 20–28 | < 20 |
+| Reads with Q < 20 | < 10% | 10–30% | > 30% |
+| N-base content | < 1% | 1–5% | > 5% |
+| GC content | 40–60% | outside range | — |
+
+---
+
+## Project structure
+
+```
+fastq-quality-parser/
+├── fastq_quality_parser.py   # Main script
+├── requirements.txt
+├── test_data/
+│   └── test_sample.fastq     # Small test file
+└── README.md
+```
+
+---
+
+## Why this exists
+
+FastQC is the standard tool but requires Java and produces HTML reports that
+are hard to parse programmatically. This script is pure Python, scriptable,
+and easy to integrate into larger pipelines or loop over many samples.
+
+---
+
+## License
+MIT
