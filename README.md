@@ -38,7 +38,7 @@ Modular NGS pipeline covering QC → trimming → alignment → variant calling 
 Designed for reproducible execution on HPC clusters and Galaxy.
 `BWA` `HISAT2` `GATK` `SAMtools` `FastQC` `Galaxy` `Bash`
 
-### [Structural Bioinformatics — Mutant Construct Analysis](https://github.com/gauriybioinfo/structural-bioinformatics)
+### [Structural Bioinformatics — Mutant Construct Analysis](https://github.com/gauriybioinfo/gauriybioinfo/blob/main/structural%20bio)
 Multiple sequence alignment, homology modeling, and structural validation of protein mutants.
 `PyMOL` `BLAST` `ClustalW` `Homology Modeling`
 
