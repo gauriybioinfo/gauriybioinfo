@@ -1,0 +1,323 @@
+"""
+fastq_quality_parser.py
+-----------------------
+A lightweight FASTQ quality control parser.
+Computes per-base quality statistics, read length distribution,
+GC content, and N-base frequency from a FASTQ file.
+Outputs a text summary report and a multi-panel QC plot.
+
+Usage:
+    python fastq_quality_parser.py -i sample.fastq -o qc_output/
+    python fastq_quality_parser.py -i sample.fastq.gz -o qc_output/ --max-reads 10000
+
+Author: Gauri
+"""
+
+import argparse
+import gzip
+import os
+import sys
+from collections import defaultdict
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import numpy as np
+
+
+# ─────────────────────────────────────────────
+# FASTQ PARSER
+# ─────────────────────────────────────────────
+
+def open_fastq(filepath):
+    """Open plain or gzip-compressed FASTQ file."""
+    if filepath.endswith(".gz"):
+        return gzip.open(filepath, "rt")
+    return open(filepath, "r")
+
+
+def parse_fastq(filepath, max_reads=None):
+    """
+    Generator that yields (header, sequence, quality_string) tuples.
+    Handles both plain and gzip FASTQ files.
+    """
+    count = 0
+    with open_fastq(filepath) as fh:
+        while True:
+            header  = fh.readline().strip()
+            seq     = fh.readline().strip()
+            plus    = fh.readline().strip()
+            qual    = fh.readline().strip()
+
+            if not header:
+                break
+            if not header.startswith("@"):
+                raise ValueError(f"Malformed FASTQ: expected '@' header, got: {header}")
+
+            yield header[1:], seq, qual
+            count += 1
+            if max_reads and count >= max_reads:
+                break
+
+
+def phred_scores(qual_string):
+    """Convert Phred+33 quality string to list of integer scores."""
+    return [ord(c) - 33 for c in qual_string]
+
+
+# ─────────────────────────────────────────────
+# STATS COLLECTION
+# ─────────────────────────────────────────────
+
+def collect_stats(filepath, max_reads=None):
+    """
+    Parse FASTQ and collect:
+    - Per-position quality score sums and counts
+    - Read length distribution
+    - GC content per read
+    - N-base count
+    - Total reads and bases
+    """
+    per_pos_scores   = defaultdict(list)   # position -> list of Q scores
+    read_lengths     = []
+    gc_contents      = []
+    n_counts         = []
+    total_reads      = 0
+    total_bases      = 0
+    low_quality_reads = 0   # reads with mean Q < 20
+
+    print(f"  Parsing: {filepath}")
+    if max_reads:
+        print(f"  Limiting to first {max_reads:,} reads")
+
+    for _, seq, qual in parse_fastq(filepath, max_reads):
+        scores = phred_scores(qual)
+        rlen   = len(seq)
+
+        # per-position scores
+        for i, q in enumerate(scores):
+            per_pos_scores[i].append(q)
+
+        # read-level stats
+        read_lengths.append(rlen)
+        gc = (seq.count("G") + seq.count("C")) / rlen * 100 if rlen > 0 else 0
+        gc_contents.append(gc)
+        n_counts.append(seq.count("N"))
+        total_bases += rlen
+        total_reads += 1
+
+        if np.mean(scores) < 20:
+            low_quality_reads += 1
+
+    # Summarise per-position
+    max_len = max(per_pos_scores.keys()) + 1 if per_pos_scores else 0
+    pos_mean  = []
+    pos_median = []
+    pos_q1    = []
+    pos_q3    = []
+
+    for i in range(max_len):
+        vals = per_pos_scores.get(i, [])
+        if vals:
+            pos_mean.append(np.mean(vals))
+            pos_median.append(np.median(vals))
+            pos_q1.append(np.percentile(vals, 25))
+            pos_q3.append(np.percentile(vals, 75))
+        else:
+            pos_mean.append(0)
+            pos_median.append(0)
+            pos_q1.append(0)
+            pos_q3.append(0)
+
+    return {
+        "total_reads":        total_reads,
+        "total_bases":        total_bases,
+        "read_lengths":       read_lengths,
+        "gc_contents":        gc_contents,
+        "n_counts":           n_counts,
+        "pos_mean":           pos_mean,
+        "pos_median":         pos_median,
+        "pos_q1":             pos_q1,
+        "pos_q3":             pos_q3,
+        "low_quality_reads":  low_quality_reads,
+        "max_len":            max_len,
+    }
+
+
+# ─────────────────────────────────────────────
+# REPORT WRITER
+# ─────────────────────────────────────────────
+
+def write_report(stats, output_dir, sample_name):
+    """Write plain-text summary report."""
+    report_path = os.path.join(output_dir, f"{sample_name}_qc_report.txt")
+
+    rl  = stats["read_lengths"]
+    gc  = stats["gc_contents"]
+    nc  = stats["n_counts"]
+    pct_low_q = stats["low_quality_reads"] / stats["total_reads"] * 100 if stats["total_reads"] > 0 else 0
+    pct_n     = sum(nc) / stats["total_bases"] * 100 if stats["total_bases"] > 0 else 0
+
+    lines = [
+        "=" * 55,
+        f"  FASTQ QC Report — {sample_name}",
+        "=" * 55,
+        "",
+        "BASIC STATISTICS",
+        f"  Total reads          : {stats['total_reads']:>12,}",
+        f"  Total bases          : {stats['total_bases']:>12,}",
+        f"  Min read length      : {min(rl):>12,}",
+        f"  Max read length      : {max(rl):>12,}",
+        f"  Mean read length     : {np.mean(rl):>12.1f}",
+        "",
+        "QUALITY",
+        f"  Mean per-base Q      : {np.mean(stats['pos_mean']):>12.1f}",
+        f"  Reads with mean Q<20 : {stats['low_quality_reads']:>12,}  ({pct_low_q:.1f}%)",
+        "",
+        "GC CONTENT",
+        f"  Mean GC (%)          : {np.mean(gc):>12.1f}",
+        f"  Std GC  (%)          : {np.std(gc):>12.1f}",
+        f"  Min GC  (%)          : {min(gc):>12.1f}",
+        f"  Max GC  (%)          : {max(gc):>12.1f}",
+        "",
+        "N BASES",
+        f"  Total N bases        : {sum(nc):>12,}",
+        f"  % N bases            : {pct_n:>12.2f}",
+        "",
+        "INTERPRETATION",
+    ]
+
+    # simple pass/warn/fail flags
+    mean_q = np.mean(stats["pos_mean"])
+    flags = []
+    flags.append(("Per-base quality",   "PASS" if mean_q >= 28 else ("WARN" if mean_q >= 20 else "FAIL")))
+    flags.append(("Low-quality reads",  "PASS" if pct_low_q < 10 else ("WARN" if pct_low_q < 30 else "FAIL")))
+    flags.append(("N-base content",     "PASS" if pct_n < 1 else ("WARN" if pct_n < 5 else "FAIL")))
+    flags.append(("GC content",         "PASS" if 40 <= np.mean(gc) <= 60 else "WARN"))
+
+    for label, status in flags:
+        lines.append(f"  [{status:<4}] {label}")
+
+    lines += ["", "=" * 55]
+
+    with open(report_path, "w") as f:
+        f.write("\n".join(lines))
+
+    print(f"  Report saved: {report_path}")
+    return report_path
+
+
+# ─────────────────────────────────────────────
+# PLOT GENERATOR
+# ─────────────────────────────────────────────
+
+def plot_qc(stats, output_dir, sample_name):
+    """Generate 4-panel QC plot."""
+    fig = plt.figure(figsize=(14, 10))
+    fig.suptitle(f"FASTQ QC — {sample_name}", fontsize=14, fontweight="bold", y=0.98)
+    gs  = gridspec.GridSpec(2, 2, hspace=0.4, wspace=0.35)
+
+    positions = list(range(stats["max_len"]))
+
+    # ── Panel 1: Per-base quality scores ──
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.fill_between(positions, stats["pos_q1"], stats["pos_q3"],
+                     alpha=0.3, color="#4C72B0", label="IQR (Q1–Q3)")
+    ax1.plot(positions, stats["pos_mean"],   color="#4C72B0", linewidth=1.5, label="Mean")
+    ax1.plot(positions, stats["pos_median"], color="#DD8452", linewidth=1,
+             linestyle="--", label="Median")
+    ax1.axhline(28, color="green",  linewidth=0.8, linestyle=":", alpha=0.7, label="Q28")
+    ax1.axhline(20, color="orange", linewidth=0.8, linestyle=":", alpha=0.7, label="Q20")
+    ax1.set_xlabel("Position in read (bp)")
+    ax1.set_ylabel("Phred quality score")
+    ax1.set_title("Per-base sequence quality")
+    ax1.legend(fontsize=7)
+    ax1.set_ylim(0, 42)
+    ax1.grid(axis="y", alpha=0.3)
+
+    # ── Panel 2: Read length distribution ──
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.hist(stats["read_lengths"], bins=40, color="#55A868", edgecolor="white",
+             linewidth=0.4)
+    ax2.set_xlabel("Read length (bp)")
+    ax2.set_ylabel("Number of reads")
+    ax2.set_title("Read length distribution")
+    ax2.axvline(np.mean(stats["read_lengths"]), color="red", linewidth=1.2,
+                linestyle="--", label=f"Mean: {np.mean(stats['read_lengths']):.0f}")
+    ax2.legend(fontsize=8)
+    ax2.grid(axis="y", alpha=0.3)
+
+    # ── Panel 3: GC content distribution ──
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.hist(stats["gc_contents"], bins=50, color="#C44E52", edgecolor="white",
+             linewidth=0.4, density=True)
+    ax3.set_xlabel("GC content (%)")
+    ax3.set_ylabel("Density")
+    ax3.set_title("GC content per read")
+    ax3.axvline(50, color="gray", linewidth=1, linestyle=":", alpha=0.7, label="50% GC")
+    ax3.axvline(np.mean(stats["gc_contents"]), color="#4C72B0", linewidth=1.2,
+                linestyle="--", label=f"Mean: {np.mean(stats['gc_contents']):.1f}%")
+    ax3.legend(fontsize=8)
+    ax3.grid(axis="y", alpha=0.3)
+
+    # ── Panel 4: N-base content per read ──
+    ax4 = fig.add_subplot(gs[1, 1])
+    n_vals = stats["n_counts"]
+    max_n  = max(n_vals) if n_vals else 1
+    bins   = range(0, min(max_n + 2, 20))
+    ax4.hist(n_vals, bins=bins, color="#8172B2", edgecolor="white", linewidth=0.4)
+    ax4.set_xlabel("N bases per read")
+    ax4.set_ylabel("Number of reads")
+    ax4.set_title("N-base content per read")
+    ax4.grid(axis="y", alpha=0.3)
+
+    plot_path = os.path.join(output_dir, f"{sample_name}_qc_plot.png")
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Plot saved:   {plot_path}")
+    return plot_path
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="FASTQ quality control parser — generates stats report and QC plot."
+    )
+    parser.add_argument("-i", "--input",     required=True,  help="Input FASTQ file (.fastq or .fastq.gz)")
+    parser.add_argument("-o", "--output",    default="qc_output", help="Output directory (default: qc_output)")
+    parser.add_argument("--max-reads",       type=int, default=None,
+                        help="Limit parsing to first N reads (useful for large files)")
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.input):
+        print(f"Error: file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+
+    os.makedirs(args.output, exist_ok=True)
+    sample_name = os.path.basename(args.input).replace(".fastq.gz", "").replace(".fastq", "")
+
+    print(f"\nFASTQ QC Parser")
+    print(f"  Input  : {args.input}")
+    print(f"  Output : {args.output}/")
+    print()
+
+    stats = collect_stats(args.input, max_reads=args.max_reads)
+
+    print(f"\n  Reads parsed   : {stats['total_reads']:,}")
+    print(f"  Total bases    : {stats['total_bases']:,}")
+    print(f"  Mean read len  : {np.mean(stats['read_lengths']):.1f} bp")
+    print(f"  Mean Q score   : {np.mean(stats['pos_mean']):.1f}")
+    print()
+
+    write_report(stats, args.output, sample_name)
+    plot_qc(stats,      args.output, sample_name)
+
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()
