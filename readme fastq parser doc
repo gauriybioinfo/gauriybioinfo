@@ -4,7 +4,7 @@ A lightweight, dependency-minimal Python tool for FASTQ quality control analysis
 Parses raw sequencing reads and generates a per-base quality report + multi-panel QC plot —
 without needing FastQC installed.
 
----
+---   
 
 ## Features
 
