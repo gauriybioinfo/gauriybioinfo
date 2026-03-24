@@ -1,0 +1,112 @@
+# NGS Data Analysis Pipeline
+
+> Modular, reproducible NGS pipeline for genomics research | HPC-ready
+
+## Overview
+
+A modular next-generation sequencing (NGS) data analysis pipeline covering
+the complete workflow from raw FASTQ reads to annotated variants and
+differential expression results. Designed for reproducible execution on
+HPC clusters and Galaxy platform.
+
+---
+
+## Pipeline overview
+
+```
+Raw FASTQ
+    │
+    ▼
+QC (FastQC · MultiQC)
+    │
+    ▼
+Trimming (Trimmomatic · Fastp)
+    │
+    ├──── DNA/WGS ────► BWA-MEM ──► SAM/BAM ──► GATK ──► VCF ──► SnpEff
+    │
+    └──── RNA-seq ────► HISAT2 ───► SAM/BAM ──► featureCounts ──► DESeq2
+```
+
+---
+
+## Tools used
+
+| Step | Tool | Purpose |
+|------|------|---------|
+| QC | FastQC, MultiQC | Per-base quality, adapter content, GC bias |
+| Trim | Trimmomatic, Fastp | Adapter removal, quality trimming |
+| Align (DNA) | BWA-MEM, Bowtie2 | Reference genome alignment |
+| Align (RNA) | HISAT2, STAR | Splice-aware alignment |
+| SAM/BAM | SAMtools, Picard | Format conversion, sort, index, dedup |
+| Variant calling | GATK HaplotypeCaller | SNPs and INDELs |
+| Counting | featureCounts | Read quantification per gene |
+| DE analysis | DESeq2, edgeR (R) | Differential expression |
+| Annotation | SnpEff, VEP | Functional variant annotation |
+| Visualisation | IGV, UCSC Browser | Genome browser inspection |
+
+---
+
+## Key commands reference
+
+```bash
+# QC
+fastqc sample_R1.fastq sample_R2.fastq -o qc_output/
+multiqc qc_output/ -o multiqc_report/
+
+# Trim
+fastp -i R1.fq -I R2.fq -o out_R1.fq -O out_R2.fq --detect_adapter_for_pe
+
+# Align (RNA-seq)
+hisat2 -x genome_index -1 R1.fq -2 R2.fq -S out.sam -p 8
+
+# SAM to BAM
+samtools view -bS out.sam | samtools sort -o sorted.bam
+samtools index sorted.bam
+samtools flagstat sorted.bam
+
+# Variant calling
+gatk HaplotypeCaller -R ref.fa -I sorted.bam -O variants.vcf
+
+# Count reads
+featureCounts -a genes.gtf -o counts.txt sorted.bam
+
+# Annotation
+snpEff ann genome variants.vcf > annotated.vcf
+```
+
+---
+
+## Galaxy workflows
+
+All core steps (QC → trim → align → count → DESeq2) available on Galaxy.
+Useful for rapid prototyping before moving to command-line HPC execution.
+
+---
+
+## Environment setup
+
+```bash
+conda create -n ngs_env python=3.9
+conda activate ngs_env
+conda install -c bioconda fastqc multiqc trimmomatic hisat2 samtools gatk4 subread
+```
+
+---
+
+## File formats
+
+| Format | Description |
+|--------|-------------|
+| FASTQ | Raw reads — 4 lines per read |
+| SAM/BAM | Aligned reads — BAM is binary/compressed |
+| VCF | Variant calls — CHROM POS REF ALT QUAL |
+| GTF/GFF | Gene annotation |
+| BED | Genomic intervals (0-based) |
+
+---
+
+## Platform
+
+- HPC cluster with SLURM job scheduler
+- Galaxy (cloud-agnostic, GUI-based)
+- Conda environment management
