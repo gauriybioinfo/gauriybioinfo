@@ -1,7 +1,7 @@
 # Hi, I'm Gauri 👋
 
 ** Protein engineering| Bioinformatics Researcher | Computational Genomics | NGS Data Analysis | Molecular Docking**
----PhD researcher at CSIR-National Chemical Laboratory, Pune---
+---PhD researcher
 
 ## About me
 
