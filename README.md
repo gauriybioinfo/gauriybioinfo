@@ -31,10 +31,7 @@ building pipelines that take data from raw sequencing reads to biological insigh
 
 ## Featured projects
 
-### [mAb Stability &  Impurity Analysis](https://github.com/gauriybioinfo/mab-stability-croda)
-Computational and experimental stability study of mabs against impurities.
-Includes full Python analysis pipeline: statistical analysis, linear regression, molecular docking.
-`Python` `AutoDock` ` `MALDI-TOF` `HPC` `SLURM`
+
 
 ### [NGS Data Analysis Pipeline](https://github.com/gauriybioinfo/ngs-pipeline)
 Modular NGS pipeline covering QC → trimming → alignment → variant calling → annotation.
