@@ -33,7 +33,7 @@ building pipelines that take data from raw sequencing reads to biological insigh
 
 
 
-### [NGS Data Analysis Pipeline](https://github.com/gauriybioinfo/ngs-pipeline)
+### [NGS Data Analysis Pipeline](https://github.com/gauriybioinfo/gauriybioinfo/blob/main/ngs-data-analysis-pipeline)
 Modular NGS pipeline covering QC → trimming → alignment → variant calling → annotation.
 Designed for reproducible execution on HPC clusters and Galaxy.
 `BWA` `HISAT2` `GATK` `SAMtools` `FastQC` `Galaxy` `Bash`
