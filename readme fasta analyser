@@ -1,0 +1,88 @@
+# FASTA Sequence Analyser
+
+A Python tool for comprehensive FASTA file analysis.
+Computes GC content, finds open reading frames (ORFs), calculates codon usage,
+measures sequence complexity, and generates analysis plots.
+Works on both nucleotide and protein FASTA files.
+
+---
+
+## Features
+
+- GC content per sequence
+- Nucleotide composition (A/T/G/C/N counts)
+- Open reading frame (ORF) detection — all 6 reading frames
+- Sequence complexity score (linguistic complexity, 2-mer)
+- Codon usage table
+- Protein mode: amino acid composition + property analysis
+- Multi-sequence FASTA support
+- Plain-text report + 4-panel plot
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/YOUR_USERNAME/fasta-sequence-analyser.git
+cd fasta-sequence-analyser
+pip install -r requirements.txt
+```
+
+---
+
+## Usage
+
+```bash
+# Nucleotide sequences
+python fasta_analyser.py -i sequences.fasta -o results/ --type nucleotide
+
+# Protein sequences
+python fasta_analyser.py -i proteins.fasta -o results/ --type protein
+
+# Custom minimum ORF length
+python fasta_analyser.py -i genome.fasta -o results/ --orf-min 300
+```
+
+---
+
+## Quick test
+
+```bash
+python generate_test_data.py
+python fasta_analyser.py -i test_data/test_sequences.fasta -o fasta_results/
+```
+
+---
+
+## Output
+
+| File | Description |
+|------|-------------|
+| `*_analysis_report.txt` | Per-sequence stats, ORF table, nucleotide composition |
+| `*_analysis_plot.png` | GC content, length distribution, composition, complexity |
+
+---
+
+## ORF detection
+
+Searches all 6 reading frames (3 forward, 3 reverse complement).
+Reports: strand, frame, start position, end position, length (bp).
+Results sorted by ORF length descending.
+
+Default minimum ORF length: **100 bp** (adjustable with `--orf-min`).
+
+---
+
+## Complexity score
+
+Linguistic complexity measures sequence diversity using k-mer frequency:
+
+- Score of **1.0** = maximally complex (all possible 2-mers present)
+- Score near **0** = low complexity / repetitive (e.g. AAAAAAA)
+
+Useful for flagging low-complexity or repetitive regions.
+
+---
+
+## License
+MIT
