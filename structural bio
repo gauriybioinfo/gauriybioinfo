@@ -1,0 +1,86 @@
+# Structural Bioinformatics — Mutant Construct Analysis
+
+
+## Overview
+
+Computational and experimental analysis of protein mutant constructs,
+combining multiple sequence alignment, homology modeling, and structural
+validation with wet-lab site-directed mutagenesis and protein characterisation.
+
+---
+
+## Methods
+
+### Computational
+
+| Method | Tool | Purpose |
+|--------|------|---------|
+| Multiple sequence alignment | ClustalW · BLAST | Conserved region identification |
+| Homology modeling | Swiss-Model · Modeller | 3D structure prediction from sequence |
+| Structural validation | PyMOL · PROCHECK | Ramachandran plot, geometry checks |
+| Conformational analysis | PyMOL | Mutation site visualisation |
+
+### Experimental
+
+- Site-directed mutagenesis — introducing specific point mutations
+- Primer design — mutation-specific primers for PCR
+- Cloning — insertion of mutant constructs into expression vectors
+- Sequence validation — confirming mutations by Sanger sequencing
+- Protein expression and characterisation
+
+---
+
+## Workflow
+
+```
+Target protein sequence
+        │
+        ▼
+BLAST homology search → template selection
+        │
+        ▼
+Multiple sequence alignment (ClustalW)
+        │
+        ▼
+Homology model generation (Swiss-Model)
+        │
+        ▼
+Structural validation (PyMOL · PROCHECK)
+        │
+        ▼
+Mutation site analysis → primer design
+        │
+        ▼
+Site-directed mutagenesis (wet lab)
+        │
+        ▼
+Sequence confirmation → protein expression
+```
+
+---
+
+## Key tools
+
+```bash
+# BLAST sequence search
+blastp -query protein.fasta -db nr -out blast_results.txt -evalue 0.001
+
+# ClustalW alignment
+clustalw2 -INFILE=sequences.fasta -OUTFILE=aligned.aln -TYPE=PROTEIN
+
+# PyMOL structural analysis
+# Load structure, visualise mutation sites, measure distances
+pymol structure.pdb
+```
+
+---
+
+## Skills demonstrated
+
+- Wet-lab to dry-lab integration
+- Protein structure-function analysis
+- Mutation effect prediction before experimental validation
+- Cross-validation of computational predictions with experimental results
+
+---
+
