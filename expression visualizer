@@ -1,0 +1,390 @@
+"""
+expression_visualiser.py
+------------------------
+Gene expression analysis and visualisation tool.
+Takes a raw counts matrix (genes x samples CSV), performs
+normalisation, differential expression-style analysis,
+and generates publication-ready figures:
+
+  1. Normalised expression heatmap (top variable genes)
+  2. Volcano plot (fold change vs significance)
+  3. Sample correlation heatmap
+  4. PCA plot
+
+Usage:
+    python expression_visualiser.py -i counts.csv -o figures/ --group1 ctrl1,ctrl2 --group2 treat1,treat2
+    python expression_visualiser.py -i counts.csv -o figures/ --group1 ctrl1,ctrl2 --group2 treat1,treat2 --top-genes 50
+
+Input CSV format:
+    gene_id,ctrl1,ctrl2,treat1,treat2
+    GENE_A,120,135,450,480
+    GENE_B,80,90,85,92
+    ...
+
+Author: Gauri
+"""
+
+import argparse
+import os
+import sys
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import numpy as np
+import pandas as pd
+from scipy import stats
+from scipy.cluster.hierarchy import linkage, dendrogram
+
+
+# ─────────────────────────────────────────────
+# NORMALISATION
+# ─────────────────────────────────────────────
+
+def cpm_normalise(counts_df):
+    """
+    Counts Per Million (CPM) normalisation.
+    Accounts for differences in library size between samples.
+    """
+    lib_sizes = counts_df.sum(axis=0)
+    cpm = counts_df.divide(lib_sizes, axis=1) * 1e6
+    return cpm
+
+
+def log2_transform(cpm_df, pseudocount=1):
+    """Log2(CPM + 1) transformation to stabilise variance."""
+    return np.log2(cpm_df + pseudocount)
+
+
+def zscore_rows(log_df):
+    """Z-score normalise each gene across samples (for heatmap)."""
+    row_means = log_df.mean(axis=1)
+    row_stds  = log_df.std(axis=1).replace(0, 1)
+    return log_df.subtract(row_means, axis=0).divide(row_stds, axis=0)
+
+
+# ─────────────────────────────────────────────
+# DIFFERENTIAL EXPRESSION (simple t-test)
+# ─────────────────────────────────────────────
+
+def simple_de_analysis(log_df, group1_cols, group2_cols):
+    """
+    Simple two-group differential expression using Welch's t-test.
+    Returns DataFrame with log2FC, p-value, -log10(p), and significance flag.
+
+    Note: For real DE analysis use DESeq2 or edgeR in R.
+    This is a simplified approximation for visualisation purposes.
+    """
+    results = []
+
+    for gene in log_df.index:
+        g1_vals = log_df.loc[gene, group1_cols].values.astype(float)
+        g2_vals = log_df.loc[gene, group2_cols].values.astype(float)
+
+        mean_g1 = np.mean(g1_vals)
+        mean_g2 = np.mean(g2_vals)
+        log2fc  = mean_g2 - mean_g1  # already in log2 space
+
+        # Welch's t-test
+        if len(g1_vals) >= 2 and len(g2_vals) >= 2:
+            _, pval = stats.ttest_ind(g1_vals, g2_vals, equal_var=False)
+        else:
+            pval = 1.0
+
+        results.append({
+            "gene":       gene,
+            "log2FC":     log2fc,
+            "pvalue":     pval,
+            "neg_log10p": -np.log10(pval + 1e-300),
+            "mean_g1":    mean_g1,
+            "mean_g2":    mean_g2,
+        })
+
+    de_df = pd.DataFrame(results).set_index("gene")
+
+    # Significance: |log2FC| > 1 AND p < 0.05
+    de_df["significant"] = (de_df["pvalue"] < 0.05) & (de_df["log2FC"].abs() > 1)
+    de_df["direction"]   = np.where(
+        de_df["log2FC"] > 0, "up", "down"
+    )
+    de_df["label"] = np.where(
+        de_df["significant"] & (de_df["log2FC"] > 0),  "Up",
+        np.where(de_df["significant"] & (de_df["log2FC"] < 0), "Down", "NS")
+    )
+
+    return de_df.sort_values("pvalue")
+
+
+def top_variable_genes(log_df, n=50):
+    """Select top N most variable genes by standard deviation."""
+    gene_var = log_df.std(axis=1)
+    return log_df.loc[gene_var.nlargest(n).index]
+
+
+# ─────────────────────────────────────────────
+# PCA
+# ─────────────────────────────────────────────
+
+def simple_pca(log_df, n_components=2):
+    """Simple PCA using SVD (no sklearn required)."""
+    X = log_df.values.T  # samples x genes
+    X_centered = X - X.mean(axis=0)
+
+    # SVD
+    U, S, Vt = np.linalg.svd(X_centered, full_matrices=False)
+    pcs = U[:, :n_components] * S[:n_components]
+
+    # Variance explained
+    var_explained = (S**2) / (S**2).sum() * 100
+
+    return pcs, var_explained
+
+
+# ─────────────────────────────────────────────
+# PLOTTING
+# ─────────────────────────────────────────────
+
+def plot_heatmap(zscore_df, output_path, title="Expression heatmap"):
+    """Hierarchically clustered heatmap of top variable genes."""
+    fig, ax = plt.subplots(figsize=(max(8, len(zscore_df.columns) * 0.8 + 4),
+                                     min(20, len(zscore_df) * 0.3 + 3)))
+
+    # Cluster genes
+    if len(zscore_df) > 2:
+        linkage_matrix = linkage(zscore_df.values, method="ward")
+        order = dendrogram(linkage_matrix, no_plot=True)["leaves"]
+        zscore_df = zscore_df.iloc[order]
+
+    # Custom diverging colormap
+    cmap = plt.cm.RdBu_r
+    vmax = min(abs(zscore_df.values).max(), 3)
+
+    im = ax.imshow(zscore_df.values, aspect="auto", cmap=cmap,
+                   vmin=-vmax, vmax=vmax, interpolation="nearest")
+
+    # Axes
+    ax.set_xticks(range(len(zscore_df.columns)))
+    ax.set_xticklabels(zscore_df.columns, rotation=45, ha="right", fontsize=9)
+    ax.set_yticks(range(len(zscore_df.index)))
+    ax.set_yticklabels(zscore_df.index, fontsize=7)
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=10)
+
+    plt.colorbar(im, ax=ax, shrink=0.6, label="Z-score")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Heatmap saved:    {output_path}")
+
+
+def plot_volcano(de_df, output_path, group1_name="Control", group2_name="Treatment"):
+    """Volcano plot — log2FC vs -log10(p-value)."""
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    # NS points
+    ns = de_df[de_df["label"] == "NS"]
+    ax.scatter(ns["log2FC"], ns["neg_log10p"],
+               color="#AAAAAA", s=12, alpha=0.5, linewidths=0, label="Not significant")
+
+    # Down-regulated
+    down = de_df[de_df["label"] == "Down"]
+    ax.scatter(down["log2FC"], down["neg_log10p"],
+               color="#4C72B0", s=20, alpha=0.8, linewidths=0,
+               label=f"Down in {group2_name} (n={len(down)})")
+
+    # Up-regulated
+    up = de_df[de_df["label"] == "Up"]
+    ax.scatter(up["log2FC"], up["neg_log10p"],
+               color="#C44E52", s=20, alpha=0.8, linewidths=0,
+               label=f"Up in {group2_name} (n={len(up)})")
+
+    # Label top 10 significant genes
+    top_genes = de_df[de_df["significant"]].nlargest(10, "neg_log10p")
+    for gene, row in top_genes.iterrows():
+        ax.annotate(gene, (row["log2FC"], row["neg_log10p"]),
+                    fontsize=6.5, ha="center", va="bottom",
+                    xytext=(0, 3), textcoords="offset points", color="#333333")
+
+    # Threshold lines
+    ax.axhline(-np.log10(0.05), color="gray", linewidth=0.8,
+               linestyle="--", alpha=0.7, label="p = 0.05")
+    ax.axvline(1,  color="gray", linewidth=0.8, linestyle=":", alpha=0.7)
+    ax.axvline(-1, color="gray", linewidth=0.8, linestyle=":", alpha=0.7)
+
+    ax.set_xlabel(f"log2 Fold Change ({group2_name} / {group1_name})", fontsize=10)
+    ax.set_ylabel("-log10(p-value)", fontsize=10)
+    ax.set_title(f"Volcano plot — {group2_name} vs {group1_name}", fontsize=11,
+                 fontweight="bold")
+    ax.legend(fontsize=8, framealpha=0.7)
+    ax.grid(alpha=0.2)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Volcano plot saved: {output_path}")
+
+
+def plot_correlation(log_df, output_path):
+    """Sample-sample Pearson correlation heatmap."""
+    corr = log_df.corr(method="pearson")
+
+    fig, ax = plt.subplots(figsize=(max(6, len(corr) * 0.8 + 2),
+                                     max(5, len(corr) * 0.7 + 2)))
+
+    cmap = plt.cm.YlOrRd
+    im = ax.imshow(corr.values, cmap=cmap, vmin=0.8, vmax=1.0, aspect="auto")
+
+    ax.set_xticks(range(len(corr.columns)))
+    ax.set_xticklabels(corr.columns, rotation=45, ha="right", fontsize=9)
+    ax.set_yticks(range(len(corr.index)))
+    ax.set_yticklabels(corr.index, fontsize=9)
+    ax.set_title("Sample correlation (Pearson)", fontsize=11, fontweight="bold")
+
+    # Annotate cells
+    for i in range(len(corr)):
+        for j in range(len(corr.columns)):
+            ax.text(j, i, f"{corr.values[i, j]:.2f}",
+                    ha="center", va="center", fontsize=8, color="black")
+
+    plt.colorbar(im, ax=ax, shrink=0.7, label="Pearson r")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Correlation heatmap saved: {output_path}")
+
+
+def plot_pca(log_df, group1_cols, group2_cols, output_path,
+             group1_name="Group 1", group2_name="Group 2"):
+    """PCA scatter plot coloured by group."""
+    pcs, var_exp = simple_pca(log_df)
+    samples = log_df.columns.tolist()
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+
+    for i, sample in enumerate(samples):
+        color = "#C44E52" if sample in group2_cols else "#4C72B0"
+        label = group2_name if sample in group2_cols else group1_name
+        ax.scatter(pcs[i, 0], pcs[i, 1], color=color, s=80,
+                   edgecolors="white", linewidths=0.5, zorder=3)
+        ax.annotate(sample, (pcs[i, 0], pcs[i, 1]),
+                    fontsize=8, xytext=(4, 4), textcoords="offset points")
+
+    # Legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor="#4C72B0", label=group1_name),
+        Patch(facecolor="#C44E52", label=group2_name),
+    ]
+    ax.legend(handles=legend_elements, fontsize=9)
+
+    ax.set_xlabel(f"PC1 ({var_exp[0]:.1f}% variance)", fontsize=10)
+    ax.set_ylabel(f"PC2 ({var_exp[1]:.1f}% variance)", fontsize=10)
+    ax.set_title("PCA — sample separation", fontsize=11, fontweight="bold")
+    ax.grid(alpha=0.2)
+    ax.axhline(0, color="gray", linewidth=0.5, alpha=0.5)
+    ax.axvline(0, color="gray", linewidth=0.5, alpha=0.5)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  PCA plot saved: {output_path}")
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Gene expression visualiser — heatmap, volcano, PCA, correlation."
+    )
+    parser.add_argument("-i", "--input",    required=True, help="Counts matrix CSV (genes x samples)")
+    parser.add_argument("-o", "--output",   default="expr_figures", help="Output directory")
+    parser.add_argument("--group1",         required=True, help="Comma-separated sample names for group 1")
+    parser.add_argument("--group2",         required=True, help="Comma-separated sample names for group 2")
+    parser.add_argument("--group1-name",    default="Control",   help="Label for group 1")
+    parser.add_argument("--group2-name",    default="Treatment", help="Label for group 2")
+    parser.add_argument("--top-genes",      type=int, default=50, help="Top N variable genes for heatmap")
+    parser.add_argument("--min-counts",     type=int, default=10, help="Minimum total counts to keep gene")
+    args = parser.parse_args()
+
+    # Parse groups
+    g1 = [s.strip() for s in args.group1.split(",")]
+    g2 = [s.strip() for s in args.group2.split(",")]
+
+    if not os.path.isfile(args.input):
+        print(f"Error: file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+
+    os.makedirs(args.output, exist_ok=True)
+    prefix = os.path.basename(args.input).replace(".csv", "")
+
+    print(f"\nExpression Visualiser")
+    print(f"  Input      : {args.input}")
+    print(f"  Group 1    : {g1}  ({args.group1_name})")
+    print(f"  Group 2    : {g2}  ({args.group2_name})")
+    print(f"  Output     : {args.output}/\n")
+
+    # Load
+    counts = pd.read_csv(args.input, index_col=0)
+    print(f"  Loaded {counts.shape[0]} genes x {counts.shape[1]} samples")
+
+    # Validate columns
+    missing = [c for c in g1 + g2 if c not in counts.columns]
+    if missing:
+        print(f"Error: columns not found in CSV: {missing}", file=sys.stderr)
+        sys.exit(1)
+
+    # Filter low-count genes
+    counts = counts[counts.sum(axis=1) >= args.min_counts]
+    print(f"  After filtering (min {args.min_counts} counts): {len(counts)} genes")
+
+    # Normalise
+    cpm    = cpm_normalise(counts)
+    log_df = log2_transform(cpm)
+    print(f"  CPM normalised and log2 transformed")
+
+    # DE analysis
+    print(f"\n  Running differential expression analysis...")
+    de_df = simple_de_analysis(log_df, g1, g2)
+    n_sig = de_df["significant"].sum()
+    n_up  = (de_df["label"] == "Up").sum()
+    n_dn  = (de_df["label"] == "Down").sum()
+    print(f"  Significant genes: {n_sig}  (Up: {n_up}, Down: {n_dn})")
+
+    # Save DE results
+    de_path = os.path.join(args.output, f"{prefix}_de_results.csv")
+    de_df.reset_index().to_csv(de_path, index=False)
+    print(f"  DE results saved: {de_path}")
+
+    # Plots
+    print(f"\n  Generating figures...")
+
+    # Heatmap — top variable genes
+    top_var = top_variable_genes(log_df, n=args.top_genes)
+    zscored = zscore_rows(top_var)
+    plot_heatmap(zscored,
+                 os.path.join(args.output, f"{prefix}_heatmap.png"),
+                 title=f"Top {args.top_genes} variable genes")
+
+    # Volcano
+    plot_volcano(de_df,
+                 os.path.join(args.output, f"{prefix}_volcano.png"),
+                 group1_name=args.group1_name,
+                 group2_name=args.group2_name)
+
+    # Correlation
+    plot_correlation(log_df,
+                     os.path.join(args.output, f"{prefix}_correlation.png"))
+
+    # PCA
+    plot_pca(log_df, g1, g2,
+             os.path.join(args.output, f"{prefix}_pca.png"),
+             group1_name=args.group1_name,
+             group2_name=args.group2_name)
+
+    print(f"\nDone. All figures saved to {args.output}/")
+
+
+if __name__ == "__main__":
+    main()
